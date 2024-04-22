@@ -9,8 +9,23 @@
 #import "FMLayoutView.h"
 #import "FMLayoutFixedSection.h"
 #import "FMLayoutLabelSection.h"
-#import "UIView+FMLayout.h"
-#import "_FMLayoutSussEmptyView.h"
+
+@interface _FMLayoutSussEmptyView : UICollectionReusableView
+
+@end
+
+@implementation _FMLayoutSussEmptyView
+ 
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.hidden = YES;
+    }
+    return self;
+}
+
+@end
 
 @interface FMLayoutView ()<UICollectionViewDataSource, UICollectionViewDelegate>
 
@@ -28,6 +43,34 @@
 @implementation FMLayoutView
 
 #pragma mark ----- Public
+- (void)appendLayoutSections:(NSArray<FMLayoutBaseSection *> *)sections{
+    [self.sections addObjectsFromArray:sections];
+}
+- (void)insertLayoutSections:(NSArray<FMLayoutBaseSection *> *)sections atIndexSet:(NSIndexSet *)indexSet{
+    [self.sections insertObjects:sections atIndexes:indexSet];
+}
+- (void)insertLayoutSection:(FMLayoutBaseSection *)section atIndex:(NSInteger)index{
+    if (index > self.sections.count) {
+        [self.sections addObject:section];
+    } else {
+        [self.sections insertObject:section atIndex:index];
+    }
+}
+- (void)deleteLayoutSections:(NSArray<FMLayoutBaseSection *> *)sections{
+    [self.sections removeObjectsInArray:sections];
+}
+
+- (void)deleteLayoutSectionAt:(NSUInteger)index{
+    [self.sections removeObjectAtIndex:index];
+}
+
+- (void)deleteLayoutSectionSet:(NSIndexSet *)set{
+    [self.sections removeObjectsAtIndexes:set];
+}
+
+- (void)exchangeLayoutSection:(NSUInteger)index to:(NSUInteger)to{
+    [self.sections exchangeObjectAtIndex:index withObjectAtIndex:to];
+}
 
 - (NSMutableArray<FMLayoutBaseSection *> *)sections{
     return self.layout.sections;
@@ -145,6 +188,9 @@
                 [self initSourceView];
                 [self sourceCellViewMoveLocation:location animation:YES];
             }
+            if (self.dragDelegate && [self.dragDelegate respondsToSelector:@selector(layoutView:beginDragging:)]) {
+                [self.dragDelegate layoutView:self beginDragging:self.sourceIndexPath];
+            }
             break;
         case UIGestureRecognizerStateChanged:
             FMLayoutLog(@"长按移动");
@@ -165,16 +211,14 @@
                         if (canExchange) {
                             [self moveItemAtIndexPath:self.sourceIndexPath toIndexPath:indexPath];
                             
-                            [section exchangeObjectAtIndex:self.sourceIndexPath.item toIndex:indexPath.item];
-                            self.sourceIndexPath = indexPath;
-                            {
-                                UICollectionViewCell *cell = [self cellForItemAtIndexPath:indexPath];
-                                CGRect frame = self.sourceCellView.frame;
-                                frame.size = cell.frame.size;
-                                [UIView animateWithDuration:0.2 animations:^{
-                                    self.sourceCellView.frame = frame;
-                                }];
+                            id itemData = section.itemDatas[self.sourceIndexPath.item];
+                            [section.itemDatas removeObjectAtIndex:self.sourceIndexPath.item];
+                            [section.itemDatas insertObject:itemData atIndex:indexPath.item];
+                            if (self.dragDelegate && [self.dragDelegate respondsToSelector:@selector(layoutView:moveItemAtSourceIndexPath:toTargetIndexPath:)]) {
+                                [self.dragDelegate layoutView:self moveItemAtSourceIndexPath:self.sourceIndexPath toTargetIndexPath:indexPath];
                             }
+                            
+                            self.sourceIndexPath = indexPath;
                         }
                     }
                 }
@@ -188,6 +232,10 @@
             FMLayoutLog(@"长按结束");
         {
             if (self.sourceIndexPath) {
+                if (self.dragDelegate && [self.dragDelegate respondsToSelector:@selector(layoutView:endDragging:)]) {
+                    [self.dragDelegate layoutView:self endDragging:self.sourceIndexPath];
+                }
+                
                 UICollectionViewCell *cell = [self cellForItemAtIndexPath:self.sourceIndexPath];
                 self.sourceIndexPath = nil;
                 [UIView animateWithDuration:0.2 animations:^{
@@ -204,7 +252,7 @@
     }
 }
 
-- (void)initSourceView{
+- (void)initSourceView {
     if (self.sourceCellView) {
         [self.sourceCellView removeFromSuperview];
     }
@@ -213,7 +261,25 @@
     if (self.configureSourceView) {
         sourceView = self.configureSourceView(sourceCell);
     } else {
-        sourceView = [sourceCell snapshotView];
+        UIGraphicsBeginImageContextWithOptions(sourceCell.frame.size, NO, [UIScreen mainScreen].scale);
+        CGContextRef context = UIGraphicsGetCurrentContext();
+        [sourceCell.layer renderInContext:context];
+        UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        UIImageView *imageView = [[UIImageView alloc] initWithImage:image];
+        
+        sourceView = [[UIView alloc] initWithFrame:sourceCell.frame];
+        sourceView.layer.shadowColor = [UIColor darkGrayColor].CGColor;
+        sourceView.layer.shadowOffset = CGSizeMake(0, 0);
+        sourceView.layer.shadowOpacity = 0.7;
+        [sourceView addSubview:imageView];
+        
+        imageView.translatesAutoresizingMaskIntoConstraints = NO;
+        NSLayoutConstraint *left = [NSLayoutConstraint constraintWithItem:imageView attribute:NSLayoutAttributeLeft relatedBy:NSLayoutRelationEqual toItem:sourceView attribute:NSLayoutAttributeLeft multiplier:1 constant:0];
+        NSLayoutConstraint *right = [NSLayoutConstraint constraintWithItem:imageView attribute:NSLayoutAttributeRight relatedBy:NSLayoutRelationEqual toItem:sourceView attribute:NSLayoutAttributeRight multiplier:1 constant:0];
+        NSLayoutConstraint *top = [NSLayoutConstraint constraintWithItem:imageView attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:sourceView attribute:NSLayoutAttributeTop multiplier:1 constant:0];
+        NSLayoutConstraint *bottom = [NSLayoutConstraint constraintWithItem:imageView attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:sourceView attribute:NSLayoutAttributeBottom multiplier:1 constant:0];
+        [sourceView addConstraints:@[left,right,top,bottom]];
     }
     [self addSubview:sourceView];
     sourceCell.hidden = YES;
@@ -352,6 +418,9 @@
     if (sectionM.configureCellData) {
         sectionM.configureCellData(sectionM, cell, indexPath.item);
     }
+    if (self.configuration && [self.configuration respondsToSelector:@selector(layoutView:configurationCell:indexPath:)]) {
+        [self.configuration layoutView:self configurationCell:cell indexPath:indexPath];
+    }
     return cell;
 }
 
@@ -365,6 +434,9 @@
         if (sectionM.configureHeaderData) {
             sectionM.configureHeaderData(sectionM, header);
         }
+        if (self.configuration && [self.configuration respondsToSelector:@selector(layoutView:configurationHeader:indexPath:)]) {
+            [self.configuration layoutView:self configurationHeader:header indexPath:indexPath];
+        }
         return header;
     }
     if (sectionM.footer && [kind isEqualToString:UICollectionElementKindSectionFooter]) {
@@ -372,12 +444,18 @@
         if (sectionM.configureFooterData) {
             sectionM.configureFooterData(sectionM, footer);
         }
+        if (self.configuration && [self.configuration respondsToSelector:@selector(layoutView:configurationFooter:indexPath:)]) {
+            [self.configuration layoutView:self configurationFooter:footer indexPath:indexPath];
+        }
         return footer;
     }
     if (sectionM.background && [kind isEqualToString:UICollectionElementKindSectionBackground]) {
         UICollectionReusableView *bg = [sectionM.background dequeueReusableViewWithCollection:collectionView indexPath:indexPath];
         if (sectionM.configureBg) {
             sectionM.configureBg(sectionM, bg);
+        }
+        if (self.configuration && [self.configuration respondsToSelector:@selector(layoutView:configurationSectionBg:indexPath:)]) {
+            [self.configuration layoutView:self configurationSectionBg:bg indexPath:indexPath];
         }
         return bg;
     }
